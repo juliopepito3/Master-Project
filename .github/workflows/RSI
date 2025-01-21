@@ -1,0 +1,86 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Load the data that we compressed into one single file and clear it
+data = pd.read_csv("sp500.csv")
+data['Date'] = pd.to_datetime(data['Date'], format='%d-%m-%Y')
+sp500 = data.drop(columns=['Low', 'Open', 'High', 'Close', 'Volume'])
+
+first_100_tickers = sp500['Ticker'].unique()[:100]
+sp500 = sp500[sp500['Ticker'].isin(first_100_tickers)]
+sp500
+
+# Computation of the RSI of all tickers over a 1-week time period here
+# period chosen = 7 days for the moment
+def rsi(data, window=7):
+    différence = data['Adjusted Close'].diff()
+    gain = np.where(différence > 0, différence, 0)
+    loss = np.where(différence < 0, -différence, 0)
+    gain_on_average = pd.Series(gain).rolling(window=window, min_periods=window).mean()
+    loss_on_average = pd.Series(loss).rolling(window=window, min_periods=window).mean()
+    rs = gain_on_average / loss_on_average
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
+
+# We put the RSI right to the respective ticker
+rsi_values = []
+for ticker in sp500['Ticker'].unique():
+    tickers = sp500[sp500['Ticker'] == ticker]
+    ticker_rsi = rsi(tickers)
+    rsi_values.extend(ticker_rsi)
+sp500['RSI'] = rsi_values
+sp500 =sp500.dropna()
+sp500
+
+# We trade according to the RSI
+# O KANE: you buy when momentum signals strenghts (RSI>70) and you sell when it signals weakness (RSI<30) :Weird ??
+# So here: Starting with 0 share, we buy one if the RSI is under 30 (stock is oversold by investors) and you sell one if over 70 (stock overbought)
+def rsi_trading(data, sell_signal=70, buy_signal=30):
+    # Initially,no shares hold at all
+    shares = 0 
+    pnl = 0  
+    cumulative_pnl = [] 
+    holding_status = [] 
+    daily_returns = [] 
+    
+    for i in range(len(data)):
+        rsi = data.iloc[i]['RSI'] # locate rsi and adj close
+        price = data.iloc[i]['Adjusted Close']
+
+        if i == 0:
+            daily_return = 0
+        else: # computing daily return from the Adj close
+            daily_return = (price - data.iloc[i - 1]['Adjusted Close']) / data.iloc[i - 1]['Adjusted Close']
+        daily_returns.append(daily_return)
+        
+        if rsi < buy_signal and shares == 0: # if we have a RSI>30 and previously no share
+            shares = 1 # then we buy one -> account for transaction costs (..)
+            buy_price = price # the price being the adj close of the day
+        elif rsi > sell_signal and shares == 1: # if crosses sell signal + we own one share
+            shares = 0 # we sell one (account for TC..)
+            pnl += price - buy_price # pnl being the price at which wejust sold - buy_price
+
+        cumulative_pnl.append(pnl) 
+        holding_status.append(shares) 
+
+    data['Cumulative PnL'] = cumulative_pnl
+    data['Holding Status'] = holding_status
+    data['Daily Return'] = daily_returns
+    return data
+
+# Now we want to apply this to every stock of the 100 tickers' list
+results = []
+for ticker in sp500['Ticker'].unique():
+    ticker_data = sp500[sp500['Ticker'] == ticker].copy()
+    ticker_results = rsi_trading(ticker_data) 
+    results.append(ticker_results)
+sp500_trading = pd.concat(results)
+
+performance_metrics = sp500_trading.groupby('Ticker').agg(
+    Average_PnL=('Cumulative PnL', 'mean'),
+    Variance_PnL=('Cumulative PnL', 'var'),
+    Average_Daily_Return=('Daily Return', 'mean'),
+    Variance_Daily_Return=('Daily Return', 'var')
+).reset_index()
+print(performance_metrics)
